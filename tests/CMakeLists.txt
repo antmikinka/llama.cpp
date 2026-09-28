@@ -264,6 +264,15 @@ llama_build_and_test(test-chat-template.cpp)
 # debug tool for chat template differential analysis (not registered as a test, run it manually)
 llama_build(test-chat-analysis.cpp)
 llama_build_and_test(test-log.cpp)
+# llama_mmap is not a public export. The Windows CI CPU build is static.
+if (NOT BUILD_SHARED_LIBS)
+    llama_build(test-mmap-unmap.cpp)
+    target_include_directories(test-mmap-unmap PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    if (WIN32)
+        target_link_libraries(test-mmap-unmap PRIVATE psapi)
+    endif()
+    llama_test(test-mmap-unmap)
+endif()
 llama_build_and_test(
     test-peg-parser.cpp
     peg-parser/simple-tokenize.cpp

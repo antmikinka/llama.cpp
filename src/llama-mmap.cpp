@@ -460,6 +460,19 @@ static llama_mmap::ranges ranges_complement(llama_mmap::ranges ranges, size_t li
 
     return res;
 }
+
+// Round [first, last) inward to whole pages. A partial page stays with the neighbor.
+static void align_range(size_t * first, size_t * last, size_t page_size) {
+    const size_t offset_in_page = *first & (page_size - 1);
+    const size_t offset_to_page = offset_in_page == 0 ? 0 : page_size - offset_in_page;
+    *first += offset_to_page;
+
+    *last = *last & ~(page_size - 1);
+
+    if (*last <= *first) {
+        *last = *first;
+    }
+}
 #endif
 
 struct llama_mmap::impl {
@@ -513,18 +526,6 @@ struct llama_mmap::impl {
         }
 
         mapped_fragments.emplace_back(0, file->size());
-    }
-
-    static void align_range(size_t * first, size_t * last, size_t page_size) {
-        size_t offset_in_page = *first & (page_size - 1);
-        size_t offset_to_page = offset_in_page == 0 ? 0 : page_size - offset_in_page;
-        *first += offset_to_page;
-
-        *last = *last & ~(page_size - 1);
-
-        if (*last <= *first) {
-            *last = *first;
-        }
     }
 
     void unmap_fragment(size_t first, size_t last) {
@@ -623,8 +624,28 @@ struct llama_mmap::impl {
     }
 
     void unmap_fragment(size_t first, size_t last) {
-        GGML_UNUSED(first);
-        GGML_UNUSED(last);
+        // MapViewOfFile cannot drop a subrange. Remove the pages from the working set.
+        // ERROR_NOT_LOCKED means the pages were not locked. They are still removed.
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        const size_t page_size = (size_t) si.dwPageSize;
+
+        if (last > size) {
+            last = size;
+        }
+        align_range(&first, &last, page_size);
+        if (last <= first || first >= size) {
+            return;
+        }
+
+        void * ptr = (uint8_t *) addr + first;
+        if (!VirtualUnlock(ptr, (SIZE_T) (last - first))) {
+            const DWORD err = GetLastError();
+            if (err != ERROR_NOT_LOCKED) {
+                LLAMA_LOG_WARN("warning: VirtualUnlock failed: %s\n",
+                        llama_format_win_err(err).c_str());
+            }
+        }
     }
 
     ~impl() {
