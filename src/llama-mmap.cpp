@@ -623,8 +623,35 @@ struct llama_mmap::impl {
     }
 
     void unmap_fragment(size_t first, size_t last) {
-        GGML_UNUSED(first);
-        GGML_UNUSED(last);
+        // MapViewOfFile cannot punch out a subrange. Drop the pages from the
+        // working set instead. ERROR_NOT_LOCKED means they were not VirtualLock'd.
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        const size_t page_size = (size_t) si.dwPageSize;
+
+        const size_t offset_in_page = first & (page_size - 1);
+        const size_t offset_to_page = offset_in_page == 0 ? 0 : page_size - offset_in_page;
+        first += offset_to_page;
+        last = last & ~(page_size - 1);
+
+        if (last <= first || first >= size) {
+            return;
+        }
+        if (last > size) {
+            last = size & ~(page_size - 1);
+        }
+        if (last <= first) {
+            return;
+        }
+
+        void * ptr = (uint8_t *) addr + first;
+        if (!VirtualUnlock(ptr, (SIZE_T) (last - first))) {
+            const DWORD err = GetLastError();
+            if (err != ERROR_NOT_LOCKED) {
+                LLAMA_LOG_WARN("warning: VirtualUnlock failed: %s\n",
+                        llama_format_win_err(err).c_str());
+            }
+        }
     }
 
     ~impl() {
